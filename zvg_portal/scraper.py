@@ -198,6 +198,24 @@ class ZvgPortal:
             s = s.replace('  ', ' ')
         return s
 
+    def _normalize_text(self, s: str) -> str:
+        """Normalize common issues: NBSPs, zero-width chars, and UTF-8/Latin-1 mojibake."""
+        if s is None:
+            return s
+        # Normalize NBSPs to regular spaces and remove zero-width space
+        try:
+            s = self._nbsps_to_spaces(s)
+        except Exception:
+            pass
+        s = s.replace('\u202f', ' ').replace('\u200b', '')
+        # Fix typical mojibake (e.g., 'MÃ¤rz' -> 'März')
+        if 'Ã' in s or 'Â' in s:
+            try:
+                s = s.encode('latin1', errors='ignore').decode('utf-8', errors='ignore')
+            except Exception:
+                pass
+        return self._remove_duplicate_spaces(s).strip()
+
     def list(self, land: Land, plz: str = '') -> Iterator[Union[RawList, RawEntry, ObjektEntry, RawAnhang]]:
         params = {'button': 'Suchen', 'all': '1'}
 
@@ -245,23 +263,27 @@ class ZvgPortal:
                         entry.aktenzeichen = match.group(0)
                         break
             if 'Amtsgericht' in rows.keys():
-                entry.amtsgericht = ' '.join(rows['Amtsgericht'])
+                entry.amtsgericht = self._normalize_text(' '.join(rows['Amtsgericht']))
             if 'Objekt/Lage' in rows.keys():
-                entry.objekt_lage = self._remove_duplicate_spaces(' '.join(rows['Objekt/Lage']))
+                raw_ol = ' '.join(rows['Objekt/Lage'])
+                entry.objekt_lage = self._normalize_text(raw_ol)
                 entry.adresse = self._address_parser.parse(entry.objekt_lage)
                 if entry.adresse is None:
                     self._logger.warning(f'Could not parse address out of: {entry.objekt_lage}')
             if 'Verkehrswert in €' in rows.keys():
                 entry.verkehrswert_in_cent = self._verkehrswert_parser.cents(rows['Verkehrswert in €'][0])
             if 'Termin' in rows.keys():
-                entry.termin_as_str = ' '.join(rows['Termin'])
+                termin_raw = ' '.join(rows['Termin'])
+                entry.termin_as_str = self._normalize_text(termin_raw)
                 if 'wurde aufgehoben' in entry.termin_as_str:
                     entry.wurde_aufgehoben = True
                 else:
+                    # Strip "Uhr" suffix and parse
+                    t_for_parse = re.sub(r'\s*Uhr\.?', '', entry.termin_as_str, flags=re.IGNORECASE).strip()
                     try:
-                        entry.termin_as_date = self._versteigerungs_termin_parser.to_datetime(entry.termin_as_str)
+                        entry.termin_as_date = self._versteigerungs_termin_parser.to_datetime(t_for_parse)
                     except ValueError:
-                        self._logger.error(f'Cannot parse date {entry.termin_as_str}.')
+                        self._logger.warning(f'Cannot parse date {repr(entry.termin_as_str)}.')
 
             for key, tds in rows.items():
                 for td_content in tds if isinstance(tds, list) else []:
