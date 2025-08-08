@@ -153,3 +153,5 @@ cython_debug/
 
 /raw/
 /logs/
+
+.DS_Store
